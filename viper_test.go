@@ -1766,17 +1766,41 @@ func TestHasChanged(t *testing.T) {
 	require.False(t, HasChanged("foo"))
 	require.False(t, HasChangedSinceInit("foo"))
 
-	Set("foo", "bar")
+	SetConfigType("yml")
+	require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: bar
+
+bar:
+  bar:
+    - bar: 1
+    - bar: 1`)))
+
 	require.False(t, HasChangedSinceInit("foo"))
+	require.False(t, HasChangedSinceInit("bar"))
 	require.True(t, HasChanged("foo"))
+	require.True(t, HasChanged("bar"))
+
 	require.Equal(t, "bar", Get("foo"))
 	require.False(t, HasChanged("foo"))
+	require.False(t, HasChangedSinceInit("foo"))
 
-	Set("foo", "baz")
+	require.NotNil(t, Get("bar"))
+
+	SetConfigType("yml")
+	require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: baz
+
+bar:
+  bar:
+    - bar: 2
+    - bar: 2`)))
+
 	require.True(t, HasChangedSinceInit("foo"))
+	require.True(t, HasChangedSinceInit("bar"))
 	require.True(t, HasChanged("foo"))
+	require.True(t, HasChanged("bar"))
+
 	require.Equal(t, "baz", Get("foo"))
 	require.False(t, HasChanged("foo"))
+	require.False(t, HasChangedSinceInit("foo"))
 	require.False(t, HasChangedSinceInit("foo"))
 }
 

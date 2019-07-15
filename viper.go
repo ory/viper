@@ -695,16 +695,16 @@ func GetViper() *Viper {
 func HasChanged(key string) bool { return v.HasChanged(key) }
 func (v *Viper) HasChanged(key string) bool {
 	lcaseKey := strings.ToLower(key)
-	v.lock.RLock()
-	defer v.lock.RUnlock()
 
+	v.lock.RLock()
 	value, ok := v.previousValues[lcaseKey]
+	v.lock.RUnlock()
 	if !ok {
-		return IsSet(lcaseKey)
+		return IsSet(key)
 	}
 
-	// Avoid writing the change
-	return value != v.find(lcaseKey)
+	// Avoid writing the change with v.find
+	return !reflect.DeepEqual(value, v.find(lcaseKey))
 }
 
 // HasChangedSinceInit returns true if a key has changed and the change has not been retrieved yet using `Get()` and all
@@ -714,17 +714,16 @@ func (v *Viper) HasChanged(key string) bool {
 func HasChangedSinceInit(key string) bool { return v.HasChangedSinceInit(key) }
 func (v *Viper) HasChangedSinceInit(key string) bool {
 	lcaseKey := strings.ToLower(key)
-	v.lock.RLock()
-	defer v.lock.RUnlock()
 
+	v.lock.RLock()
 	value, ok := v.previousValues[lcaseKey]
+	v.lock.RUnlock()
 	if !ok {
 		return false
 	}
 
-	// Avoid writing the change
-	return value != v.find(lcaseKey)
-
+	// Avoid writing the change with v.find
+	return !reflect.DeepEqual(value, v.find(lcaseKey))
 }
 
 // Get can retrieve any value given the key to use.
