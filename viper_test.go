@@ -1804,6 +1804,38 @@ bar:
 	require.False(t, HasChangedSinceInit("foo"))
 }
 
+func TestRace(t *testing.T) {
+	Reset()
+
+	var wg sync.WaitGroup
+	keys := []string{"foo", "bar", "bar.bar", "bar.bar.bar"}
+	wg.Add(1 + len(keys))
+
+	start := time.Now()
+	go func() {
+		defer wg.Done()
+		var i int
+		for start.Add(time.Second).After(time.Now()) {
+			SetConfigType("yml")
+			require.NoError(t, ReadConfig(bytes.NewBufferString(fmt.Sprintf(`foo: bar
+bar:
+  bar:
+    - bar: %d`, i))))
+		}
+	}()
+
+	for _, key := range keys {
+		go func(k string) {
+			defer wg.Done()
+			for start.Add(time.Second).After(time.Now()) {
+				Get(k)
+			}
+		}(key)
+	}
+
+	wg.Wait()
+}
+
 func BenchmarkGetBool(b *testing.B) {
 	key := "BenchmarkGetBool"
 	v = New()
