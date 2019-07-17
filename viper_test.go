@@ -1836,6 +1836,12 @@ bar:
 	wg.Wait()
 }
 
+func TestSetRawConfig(t *testing.T) {
+	Reset()
+	SetRawConfig(map[string]interface{}{"foo": "bar"})
+	assert.Equal(t, "bar", Get("foo"))
+}
+
 func BenchmarkGetBool(b *testing.B) {
 	key := "BenchmarkGetBool"
 	v = New()

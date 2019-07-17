@@ -1400,6 +1400,14 @@ func (v *Viper) ReadInConfig() error {
 	return nil
 }
 
+// SetRawConfig overwrites the raw config.
+func SetRawConfig(config map[string]interface{}) { v.SetRawConfig(config) }
+func (v *Viper) SetRawConfig(config map[string]interface{}) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+	v.config = config
+}
+
 // MergeInConfig merges a new configuration with an existing config.
 func MergeInConfig() error { return v.MergeInConfig() }
 func (v *Viper) MergeInConfig() error {
