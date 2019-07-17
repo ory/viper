@@ -1405,6 +1405,7 @@ func SetRawConfig(config map[string]interface{}) { v.SetRawConfig(config) }
 func (v *Viper) SetRawConfig(config map[string]interface{}) {
 	v.lock.Lock()
 	defer v.lock.Unlock()
+	insensitiviseMap(config)
 	v.config = config
 }
 
