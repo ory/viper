@@ -1,6 +1,6 @@
 ![viper logo](https://cloud.githubusercontent.com/assets/173412/10886745/998df88a-8151-11e5-9448-4736db51020d.png)
 
-[![CircleCI](https://circleci.com/gh/ory/viper/tree/master.svg?style=shield](https://circleci.com/gh/ory/viper/tree/master)
+[![CircleCI](https://circleci.com/gh/ory/viper/tree/master.svg?style=shield)](https://circleci.com/gh/ory/viper/tree/master)
 
 Go configuration with fangs!
 
