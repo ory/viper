@@ -185,6 +185,7 @@ type Viper struct {
 	configFile        string
 	configType        string
 	configPermissions os.FileMode
+	configChangedAt   time.Time
 	envPrefix         string
 
 	automaticEnvApplied bool
@@ -240,6 +241,7 @@ func New() *Viper {
 	v := new(Viper)
 	v.keyDelim = "."
 	v.configName = "config"
+	v.configChangedAt = time.Now()
 	v.configPermissions = os.FileMode(0644)
 	v.fs = afero.NewOsFs()
 	v.config = make(map[string]interface{})
@@ -447,6 +449,15 @@ func (v *Viper) ConfigFileUsed() string {
 	defer v.lock.RUnlock()
 
 	return v.configFile
+}
+
+// ConfigChangeAt returns the time of the last config change.
+func ConfigChangeAt() time.Time { return v.ConfigChangeAt() }
+func (v *Viper) ConfigChangeAt() time.Time {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
+
+	return v.configChangedAt
 }
 
 // AddConfigPath adds a path for Viper to search for the config file in.
@@ -1395,6 +1406,7 @@ func (v *Viper) ReadInConfig() error {
 
 	v.lock.Lock()
 	v.config = config
+	v.configChangedAt = time.Now()
 	v.lock.Unlock()
 
 	return nil
@@ -1407,6 +1419,7 @@ func (v *Viper) SetRawConfig(config map[string]interface{}) {
 	defer v.lock.Unlock()
 	insensitiviseMap(config)
 	v.config = config
+	v.configChangedAt = time.Now()
 }
 
 // MergeInConfig merges a new configuration with an existing config.
@@ -1437,6 +1450,7 @@ func (v *Viper) ReadConfig(in io.Reader) error {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 	v.config = make(map[string]interface{})
+	v.configChangedAt = time.Now()
 	return v.unmarshalReader(in, v.config)
 }
 
@@ -1460,6 +1474,7 @@ func (v *Viper) MergeConfigMap(cfg map[string]interface{}) error {
 	}
 	insensitiviseMap(cfg)
 	mergeMaps(cfg, v.config, nil)
+	v.configChangedAt = time.Now()
 	v.lock.Unlock()
 	return nil
 }
