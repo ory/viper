@@ -1804,6 +1804,78 @@ bar:
 	require.False(t, HasChangedSinceInit("foo"))
 }
 
+func TestConfigChangedAt(t *testing.T) {
+	t.Run("read config", func(t *testing.T) {
+		Reset()
+		SetConfigType("yml")
+		changedAt := ConfigChangeAt()
+
+		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: bar`)))
+
+		// Check that changedAt is different to inital
+		firstRead := ConfigChangeAt()
+		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
+
+		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: baz`)))
+
+		// Check that changedAt is different to last read
+		assert.NotEqual(t, firstRead.UnixNano(), ConfigChangeAt().UnixNano())
+	})
+
+	t.Run("merge config", func(t *testing.T) {
+		Reset()
+		SetConfigType("yml")
+		changedAt := ConfigChangeAt()
+
+		if err := v.ReadConfig(bytes.NewBuffer(yamlMergeExampleTgt)); err != nil {
+			t.Fatal(err)
+		}
+
+		// Check that changedAt is different to inital
+		firstRead := ConfigChangeAt()
+		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
+
+		if err := v.MergeConfig(bytes.NewBuffer(yamlMergeExampleSrc)); err != nil {
+			t.Fatal(err)
+		}
+
+		// Check that changedAt is different to last read
+		assert.NotEqual(t, firstRead.UnixNano(), ConfigChangeAt().UnixNano())
+	})
+
+	t.Run("watch file", func(t *testing.T) {
+		if runtime.GOOS == "linux" {
+			// TODO(bep) FIX ME
+			t.Skip("Skip test on Linux ...")
+		}
+
+		// given a `config.yaml` file being watched
+		v, configFile, cleanup := newViperWithConfigFile(t)
+		changedAt := v.ConfigChangeAt()
+		defer cleanup()
+
+		_, err := os.Stat(configFile)
+		require.NoError(t, err)
+		t.Logf("test config file: %s\n", configFile)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		v.OnConfigChange(func(in fsnotify.Event) {
+			t.Logf("config file changed")
+			wg.Done()
+		})
+		v.WatchConfig()
+
+		// when overwriting the file and waiting for the custom change notification handler to be triggered
+		err = ioutil.WriteFile(configFile, []byte("foo: baz\n"), 0640)
+		wg.Wait()
+		// then the config value should have changed
+		require.Nil(t, err)
+
+		// Check that changedAt is different
+		assert.NotEqual(t, changedAt.UnixNano(), v.ConfigChangeAt().UnixNano())
+	})
+}
+
 func TestRace(t *testing.T) {
 	Reset()
 
