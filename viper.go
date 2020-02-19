@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -769,7 +770,7 @@ func (v *Viper) HasChanged(key string) bool {
 	}
 
 	// Avoid writing the change with v.find
-	return !reflect.DeepEqual(value, v.find(lcaseKey))
+	return !reflect.DeepEqual(value, v.find(lcaseKey, true))
 }
 
 // HasChangedSinceInit returns true if a key has changed and the change has not been retrieved yet using `Get()` and all
@@ -788,7 +789,7 @@ func (v *Viper) HasChangedSinceInit(key string) bool {
 	}
 
 	// Avoid writing the change with v.find
-	return !reflect.DeepEqual(value, v.find(lcaseKey))
+	return !reflect.DeepEqual(value, v.find(lcaseKey, true))
 }
 
 // Get can retrieve any value given the key to use.
@@ -1561,19 +1562,13 @@ func (v *Viper) writeConfig(filename string, force bool) error {
 	if !force {
 		flags |= os.O_EXCL
 	}
-
-	var buffer bytes.Buffer
-	if err := v.marshalWriter(&buffer, configType); err != nil {
-		return err
-	}
-
 	f, err := v.fs.OpenFile(filename, flags, v.configPermissions)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, &buffer); err != nil {
+	if err := v.marshalWriter(f, configType); err != nil {
 		return err
 	}
 
