@@ -2273,7 +2273,7 @@ func TestConfigChangedAt(t *testing.T) {
 
 		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: bar`)))
 
-		// Check that changedAt is different to inital
+		// Check that changedAt is different to initial
 		firstRead := ConfigChangeAt()
 		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
 
@@ -2292,7 +2292,7 @@ func TestConfigChangedAt(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Check that changedAt is different to inital
+		// Check that changedAt is different to initial
 		firstRead := ConfigChangeAt()
 		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
 
