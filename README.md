@@ -1,10 +1,16 @@
 ![viper logo](https://cloud.githubusercontent.com/assets/173412/10886745/998df88a-8151-11e5-9448-4736db51020d.png)
 
+[![CircleCI](https://circleci.com/gh/ory/viper/tree/master.svg?style=shield)](https://circleci.com/gh/ory/viper/tree/master)
+
 Go configuration with fangs!
 
-[![Actions](https://github.com/spf13/viper/workflows/CI/badge.svg)](https://github.com/spf13/viper)
-[![Join the chat at https://gitter.im/spf13/viper](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/spf13/viper?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-[![GoDoc](https://godoc.org/github.com/spf13/viper?status.svg)](https://godoc.org/github.com/spf13/viper)
+> This is a fork. It resolves several issues that are left unresolved in [the upstream](https://github.com/ory/viper).
+> Issues resolved and features added include:
+>
+> - Fixed race conditions when reloading configs.
+> - Added `HasChanged(key string) bool` which returns true (once!) when a value has changed.
+> - Make sure that `viper.AllSettings()` always returns `map[string]interface{}` which was not the case and incompatible
+    with de/encoders like `json`.
 
 Many Go projects are built using Viper including:
 
@@ -18,11 +24,10 @@ Many Go projects are built using Viper including:
 * [Clairctl](https://github.com/jgsqware/clairctl)
 * [Mercure](https://mercure.rocks)
 
-
 ## Install
 
 ```console
-go get github.com/spf13/viper
+go get -u github.com/ory/viper
 ```
 
 
@@ -393,7 +398,7 @@ viper.BindFlagValues("my-flags", fSet)
 To enable remote support in Viper, do a blank import of the `viper/remote`
 package:
 
-`import _ "github.com/spf13/viper/remote"`
+`import _ "github.com/ory/viper/remote"`
 
 Viper will read a config string (as JSON, TOML, YAML, HCL or envfile) retrieved from a path
 in a Key/Value store such as etcd or Consul.  These values take precedence over
@@ -435,7 +440,7 @@ err := viper.ReadRemoteConfig()
 ```
 
 #### Consul
-You need to set a key to Consul key/value storage with JSON value containing your desired config.  
+You need to set a key to Consul key/value storage with JSON value containing your desired config.
 For example, create a Consul key/value store key `MY_CONSUL_KEY` with value:
 
 ```json
@@ -738,14 +743,14 @@ Viper uses [github.com/mitchellh/mapstructure](https://github.com/mitchellh/maps
 
 ### Marshalling to string
 
-You may need to marshal all the settings held in viper into a string rather than write them to a file. 
+You may need to marshal all the settings held in viper into a string rather than write them to a file.
 You can use your favorite format's marshaller with the config returned by `AllSettings()`.
 
 ```go
 import (
     yaml "gopkg.in/yaml.v2"
     // ...
-) 
+)
 
 func yamlStringSettings() string {
     c := viper.AllSettings()

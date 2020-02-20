@@ -196,6 +196,7 @@ type Viper struct {
 	configFile        string
 	configType        string
 	configPermissions os.FileMode
+	configChangedAt   time.Time
 	envPrefix         string
 
 	automaticEnvApplied bool
@@ -211,6 +212,8 @@ type Viper struct {
 	aliases        map[string]string
 	typeByDefValue bool
 
+	previousValues map[string]interface{}
+
 	// Store read properties on the object so that we can write back in order with comments.
 	// This will only be used if the configuration read is a properties file.
 	properties *properties.Properties
@@ -218,6 +221,8 @@ type Viper struct {
 	onConfigChange func(fsnotify.Event)
 
 	cache *ristretto.Cache
+
+	lock *sync.RWMutex
 }
 
 // New returns an initialized Viper instance.
@@ -225,16 +230,20 @@ func New() *Viper {
 	v := new(Viper)
 	v.keyDelim = "."
 	v.configName = "config"
+	v.configChangedAt = time.Now()
 	v.configPermissions = os.FileMode(0644)
 	v.fs = afero.NewOsFs()
 	v.config = make(map[string]interface{})
 	v.override = make(map[string]interface{})
 	v.defaults = make(map[string]interface{})
 	v.kvstore = make(map[string]interface{})
+	v.previousValues = make(map[string]interface{})
 	v.pflags = make(map[string]FlagValue)
 	v.env = make(map[string]string)
 	v.aliases = make(map[string]string)
 	v.typeByDefValue = false
+	// v.lock = &lockLogger{new(sync.RWMutex)}
+	v.lock = new(sync.RWMutex)
 
 	var err error
 	v.cache, err = ristretto.NewCache(&ristretto.Config{
@@ -437,7 +446,9 @@ func (v *Viper) WatchConfig() {
 func SetConfigFile(in string) { v.SetConfigFile(in) }
 func (v *Viper) SetConfigFile(in string) {
 	if in != "" {
+		v.lock.Lock()
 		v.configFile = in
+		v.lock.Unlock()
 	}
 }
 
@@ -448,7 +459,9 @@ func SetEnvPrefix(in string) { v.SetEnvPrefix(in) }
 func (v *Viper) SetEnvPrefix(in string) {
 	v.cache.Clear()
 	if in != "" {
+		v.lock.Lock()
 		v.envPrefix = in
+		v.lock.Unlock()
 	}
 }
 
@@ -466,7 +479,9 @@ func (v *Viper) mergeWithEnvPrefix(in string) string {
 func AllowEmptyEnv(allowEmptyEnv bool) { v.AllowEmptyEnv(allowEmptyEnv) }
 func (v *Viper) AllowEmptyEnv(allowEmptyEnv bool) {
 	v.cache.Clear()
+	v.lock.Lock()
 	v.allowEmptyEnv = allowEmptyEnv
+	v.lock.Unlock()
 }
 
 // TODO: should getEnv logic be moved into find(). Can generalize the use of
@@ -487,8 +502,22 @@ func (v *Viper) getEnv(key string) (string, bool) {
 }
 
 // ConfigFileUsed returns the file used to populate the config registry.
-func ConfigFileUsed() string            { return v.ConfigFileUsed() }
-func (v *Viper) ConfigFileUsed() string { return v.configFile }
+func ConfigFileUsed() string { return v.ConfigFileUsed() }
+func (v *Viper) ConfigFileUsed() string {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
+
+	return v.configFile
+}
+
+// ConfigChangeAt returns the time of the last config change.
+func ConfigChangeAt() time.Time { return v.ConfigChangeAt() }
+func (v *Viper) ConfigChangeAt() time.Time {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
+
+	return v.configChangedAt
+}
 
 // AddConfigPath adds a path for Viper to search for the config file in.
 // Can be called multiple times to define multiple search paths.
@@ -498,9 +527,11 @@ func (v *Viper) AddConfigPath(in string) {
 	if in != "" {
 		absin := absPathify(in)
 		jww.INFO.Println("adding", absin, "to paths to search")
+		v.lock.Lock()
 		if !stringInSlice(absin, v.configPaths) {
 			v.configPaths = append(v.configPaths, absin)
 		}
+		v.lock.Unlock()
 	}
 }
 
@@ -528,7 +559,9 @@ func (v *Viper) AddRemoteProvider(provider, endpoint, path string) error {
 			path:     path,
 		}
 		if !v.providerPathExists(rp) {
+			v.lock.Lock()
 			v.remoteProviders = append(v.remoteProviders, rp)
+			v.lock.Unlock()
 		}
 	}
 	return nil
@@ -562,13 +595,17 @@ func (v *Viper) AddSecureRemoteProvider(provider, endpoint, path, secretkeyring 
 			secretKeyring: secretkeyring,
 		}
 		if !v.providerPathExists(rp) {
+			v.lock.Lock()
 			v.remoteProviders = append(v.remoteProviders, rp)
+			v.lock.Unlock()
 		}
 	}
 	return nil
 }
 
 func (v *Viper) providerPathExists(p *defaultRemoteProvider) bool {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
 	for _, y := range v.remoteProviders {
 		if reflect.DeepEqual(y, p) {
 			return true
@@ -739,12 +776,52 @@ func (v *Viper) isPathShadowedInAutoEnv(path []string) string {
 func SetTypeByDefaultValue(enable bool) { v.SetTypeByDefaultValue(enable) }
 func (v *Viper) SetTypeByDefaultValue(enable bool) {
 	v.cache.Clear()
+	v.lock.Lock()
 	v.typeByDefValue = enable
+	v.lock.Unlock()
 }
 
 // GetViper gets the global Viper instance.
 func GetViper() *Viper {
 	return v
+}
+
+// HasChanged returns true if a key has changed and the change has not been retrieved yet using `Get()` and all
+// casters `GetString()`, `GetDuration()`, ...
+//
+// If the value has not been retrieved at all this will also return true.
+func HasChanged(key string) bool { return v.HasChanged(key) }
+func (v *Viper) HasChanged(key string) bool {
+	lcaseKey := strings.ToLower(key)
+
+	v.lock.RLock()
+	value, ok := v.previousValues[lcaseKey]
+	v.lock.RUnlock()
+	if !ok {
+		return IsSet(key)
+	}
+
+	// Avoid writing the change with v.find
+	return !reflect.DeepEqual(value, v.find(lcaseKey, true))
+}
+
+// HasChangedSinceInit returns true if a key has changed and the change has not been retrieved yet using `Get()` and all
+// casters `GetString()`, `GetDuration()`, ...
+//
+// If the value has not been retrieved before at all this will return false.
+func HasChangedSinceInit(key string) bool { return v.HasChangedSinceInit(key) }
+func (v *Viper) HasChangedSinceInit(key string) bool {
+	lcaseKey := strings.ToLower(key)
+
+	v.lock.RLock()
+	value, ok := v.previousValues[lcaseKey]
+	v.lock.RUnlock()
+	if !ok {
+		return false
+	}
+
+	// Avoid writing the change with v.find
+	return !reflect.DeepEqual(value, v.find(lcaseKey, true))
 }
 
 // Get can retrieve any value given the key to use.
@@ -759,6 +836,11 @@ func (v *Viper) Get(key string) interface{} {
 	lcaseKey := strings.ToLower(key)
 
 	val := v.cachedFind(lcaseKey, true)
+
+	v.lock.Lock()
+	v.previousValues[lcaseKey] = val
+	v.lock.Unlock()
+
 	if val == nil {
 		return nil
 	}
@@ -766,11 +848,14 @@ func (v *Viper) Get(key string) interface{} {
 	if v.typeByDefValue {
 		// TODO(bep) this branch isn't covered by a single test.
 		valType := val
+
+		v.lock.RLock()
 		path := strings.Split(lcaseKey, v.keyDelim)
 		defVal := v.searchMap(v.defaults, path)
 		if defVal != nil {
 			valType = defVal
 		}
+		v.lock.RUnlock()
 
 		switch valType.(type) {
 		case bool:
@@ -1038,7 +1123,9 @@ func (v *Viper) BindFlagValue(key string, flag FlagValue) error {
 	if flag == nil {
 		return fmt.Errorf("flag for %q is nil", key)
 	}
+	v.lock.Lock()
 	v.pflags[strings.ToLower(key)] = flag
+	v.lock.Unlock()
 	return nil
 }
 
@@ -1062,7 +1149,9 @@ func (v *Viper) BindEnv(input ...string) error {
 		envkey = input[1]
 	}
 
+	v.lock.Lock()
 	v.env[key] = envkey
+	v.lock.Unlock()
 
 	return nil
 }
@@ -1090,6 +1179,7 @@ func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
 //
 // Note: this assumes a lower-cased key given.
 func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
+	v.lock.RLock()
 	var (
 		val    interface{}
 		exists bool
@@ -1099,11 +1189,16 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 
 	// compute the path through the nested maps to the nested value
 	if nested && v.isPathShadowedInDeepMap(path, castMapStringToMapInterface(v.aliases)) != "" {
+		v.lock.RUnlock()
 		return nil
 	}
+	v.lock.RUnlock()
 
 	// if the requested key is an alias, then return the proper key
 	lcaseKey = v.realKey(lcaseKey)
+
+	v.lock.RLock()
+	defer v.lock.RUnlock()
 	path = strings.Split(lcaseKey, v.keyDelim)
 	nested = len(path) > 1
 
@@ -1242,7 +1337,9 @@ func (v *Viper) IsSet(key string) bool {
 func AutomaticEnv() { v.AutomaticEnv() }
 func (v *Viper) AutomaticEnv() {
 	v.cache.Clear()
+	v.lock.Lock()
 	v.automaticEnvApplied = true
+	v.lock.Unlock()
 }
 
 // SetEnvKeyReplacer sets the strings.Replacer on the viper object
@@ -1251,7 +1348,9 @@ func (v *Viper) AutomaticEnv() {
 func SetEnvKeyReplacer(r *strings.Replacer) { v.SetEnvKeyReplacer(r) }
 func (v *Viper) SetEnvKeyReplacer(r *strings.Replacer) {
 	v.cache.Clear()
+	v.lock.Lock()
 	v.envKeyReplacer = r
+	v.lock.Unlock()
 }
 
 // RegisterAlias creates an alias that provides another accessor for the same key.
@@ -1264,9 +1363,12 @@ func (v *Viper) RegisterAlias(alias string, key string) {
 func (v *Viper) registerAlias(alias string, key string) {
 	alias = strings.ToLower(alias)
 	if alias != key && alias != v.realKey(key) {
+		v.lock.RLock()
 		_, exists := v.aliases[alias]
+		v.lock.RUnlock()
 
 		if !exists {
+			v.lock.Lock()
 			// if we alias something that exists in one of the maps to another
 			// name, we'll never be able to get that value using the original
 			// name, so move the config value to the new realkey.
@@ -1287,6 +1389,7 @@ func (v *Viper) registerAlias(alias string, key string) {
 				v.override[key] = val
 			}
 			v.aliases[alias] = key
+			v.lock.Unlock()
 		}
 	} else {
 		jww.WARN.Println("Creating circular reference alias", alias, key, v.realKey(key))
@@ -1294,7 +1397,10 @@ func (v *Viper) registerAlias(alias string, key string) {
 }
 
 func (v *Viper) realKey(key string) string {
+	v.lock.RLock()
 	newkey, exists := v.aliases[key]
+	v.lock.RUnlock()
+
 	if exists {
 		jww.DEBUG.Println("Alias", key, "to", newkey)
 		return v.realKey(newkey)
@@ -1307,8 +1413,9 @@ func InConfig(key string) bool { return v.InConfig(key) }
 func (v *Viper) InConfig(key string) bool {
 	// if the requested key is an alias, then return the proper key
 	key = v.realKey(key)
-
+	v.lock.RLock()
 	_, exists := v.config[key]
+	v.lock.RUnlock()
 	return exists
 }
 
@@ -1324,12 +1431,16 @@ func (v *Viper) SetDefault(key string, value interface{}) {
 	key = v.realKey(strings.ToLower(key))
 	value = toCaseInsensitiveValue(value)
 
+	v.lock.RLock()
 	path := strings.Split(key, v.keyDelim)
 	lastKey := strings.ToLower(path[len(path)-1])
 	deepestMap := deepSearch(v.defaults, path[0:len(path)-1])
+	v.lock.RUnlock()
 
+	v.lock.Lock()
 	// set innermost value
 	deepestMap[lastKey] = value
+	v.lock.Unlock()
 }
 
 // Set sets the value for the key in the override register.
@@ -1345,12 +1456,16 @@ func (v *Viper) Set(key string, value interface{}) {
 	key = v.realKey(strings.ToLower(key))
 	value = toCaseInsensitiveValue(value)
 
+	v.lock.RLock()
 	path := strings.Split(key, v.keyDelim)
 	lastKey := strings.ToLower(path[len(path)-1])
 	deepestMap := deepSearch(v.override, path[0:len(path)-1])
+	v.lock.RUnlock()
 
 	// set innermost value
+	v.lock.Lock()
 	deepestMap[lastKey] = value
+	v.lock.Unlock()
 }
 
 // ReadInConfig will discover and load the configuration file from disk
@@ -1381,8 +1496,22 @@ func (v *Viper) ReadInConfig() error {
 		return err
 	}
 
+	v.lock.Lock()
 	v.config = config
+	v.configChangedAt = time.Now()
+	v.lock.Unlock()
+
 	return nil
+}
+
+// SetRawConfig overwrites the raw config.
+func SetRawConfig(config map[string]interface{}) { v.SetRawConfig(config) }
+func (v *Viper) SetRawConfig(config map[string]interface{}) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+	insensitiviseMap(config)
+	v.config = config
+	v.configChangedAt = time.Now()
 }
 
 // MergeInConfig merges a new configuration with an existing config.
@@ -1411,8 +1540,11 @@ func (v *Viper) MergeInConfig() error {
 // key does not exist in the file.
 func ReadConfig(in io.Reader) error { return v.ReadConfig(in) }
 func (v *Viper) ReadConfig(in io.Reader) error {
+	v.lock.Lock()
+	defer v.lock.Unlock()
 	v.cache.Clear()
 	v.config = make(map[string]interface{})
+	v.configChangedAt = time.Now()
 	return v.unmarshalReader(in, v.config)
 }
 
@@ -1431,12 +1563,15 @@ func (v *Viper) MergeConfig(in io.Reader) error {
 // Note that the map given may be modified.
 func MergeConfigMap(cfg map[string]interface{}) error { return v.MergeConfigMap(cfg) }
 func (v *Viper) MergeConfigMap(cfg map[string]interface{}) error {
+	v.lock.Lock()
 	v.cache.Clear()
 	if v.config == nil {
 		v.config = make(map[string]interface{})
 	}
 	insensitiviseMap(cfg)
 	mergeMaps(cfg, v.config, nil)
+	v.configChangedAt = time.Now()
+	v.lock.Unlock()
 	return nil
 }
 
@@ -1598,7 +1733,6 @@ func (v *Viper) unmarshalReader(in io.Reader, c map[string]interface{}) error {
 	return nil
 }
 
-// Marshal a map into Writer.
 func (v *Viper) marshalWriter(f afero.File, configType string) error {
 	c := v.AllSettings()
 	switch configType {
@@ -1807,26 +1941,34 @@ func (v *Viper) WatchRemoteConfigOnChannel() error {
 // Retrieve the first found remote configuration.
 func (v *Viper) getKeyValueConfig() error {
 	if RemoteConfig == nil {
-		return RemoteConfigError("Enable the remote features by doing a blank import of the viper/remote package: '_ github.com/spf13/viper/remote'")
+		return RemoteConfigError("Enable the remote features by doing a blank import of the viper/remote package: '_ github.com/ory/viper/remote'")
 	}
 
+	v.lock.RLock()
 	for _, rp := range v.remoteProviders {
 		val, err := v.getRemoteConfig(rp)
 		if err != nil {
 			continue
 		}
+		v.lock.RUnlock()
+		v.lock.Lock()
 		v.kvstore = val
+		v.lock.Unlock()
 		return nil
 	}
+	v.lock.RUnlock()
 	return RemoteConfigError("No Files Found")
 }
 
 func (v *Viper) getRemoteConfig(provider RemoteProvider) (map[string]interface{}, error) {
+
 	reader, err := RemoteConfig.Get(provider)
 	if err != nil {
 		return nil, err
 	}
+	v.lock.RLock()
 	err = v.unmarshalReader(reader, v.kvstore)
+	v.lock.RUnlock()
 	return v.kvstore, err
 }
 
@@ -1873,6 +2015,9 @@ func (v *Viper) watchRemoteConfig(provider RemoteProvider) (map[string]interface
 // Nested keys are returned with a v.keyDelim separator
 func AllKeys() []string { return v.AllKeys() }
 func (v *Viper) AllKeys() []string {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
+
 	m := map[string]bool{}
 	// add all paths, by order of descending priority to ensure correct shadowing
 	m = v.flattenAndMergeMap(m, castMapStringToMapInterface(v.aliases), "")
@@ -1968,14 +2113,16 @@ func (v *Viper) AllSettings() map[string]interface{} {
 		// set innermost value
 		deepestMap[lastKey] = value
 	}
-	return m
+	return toMapStringInterface(m).(map[string]interface{}) // This is safe because the input is map[string]interface{}
 }
 
 // SetFs sets the filesystem to use to read configuration.
 func SetFs(fs afero.Fs) { v.SetFs(fs) }
 func (v *Viper) SetFs(fs afero.Fs) {
 	v.cache.Clear()
+	v.lock.Lock()
 	v.fs = fs
+	v.lock.Unlock()
 }
 
 // SetConfigName sets name for the config file.
@@ -1984,8 +2131,10 @@ func SetConfigName(in string) { v.SetConfigName(in) }
 func (v *Viper) SetConfigName(in string) {
 	v.cache.Clear()
 	if in != "" {
+		v.lock.Lock()
 		v.configName = in
 		v.configFile = ""
+		v.lock.Unlock()
 	}
 }
 
@@ -1995,14 +2144,18 @@ func SetConfigType(in string) { v.SetConfigType(in) }
 func (v *Viper) SetConfigType(in string) {
 	v.cache.Clear()
 	if in != "" {
+		v.lock.Lock()
 		v.configType = in
+		v.lock.Unlock()
 	}
 }
 
 // SetConfigPermissions sets the permissions for the config file.
 func SetConfigPermissions(perm os.FileMode) { v.SetConfigPermissions(perm) }
 func (v *Viper) SetConfigPermissions(perm os.FileMode) {
+	v.lock.Lock()
 	v.configPermissions = perm.Perm()
+	v.lock.Unlock()
 }
 
 func (v *Viper) getConfigType() string {
@@ -2072,6 +2225,8 @@ func (v *Viper) findConfigFile() (string, error) {
 // purposes.
 func Debug() { v.Debug() }
 func (v *Viper) Debug() {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
 	fmt.Printf("Aliases:\n%#v\n", v.aliases)
 	fmt.Printf("Override:\n%#v\n", v.override)
 	fmt.Printf("PFlags:\n%#v\n", v.pflags)

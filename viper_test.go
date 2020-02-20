@@ -8,6 +8,7 @@ package viper
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -2208,6 +2209,170 @@ func TestKeyDelimiter(t *testing.T) {
 	assert.NoError(t, v.Unmarshal(&actual))
 
 	assert.Equal(t, expected, actual)
+}
+
+func TestArrayOfObjects(t *testing.T) {
+	SetConfigType("yml")
+	require.NoError(t, ReadConfig(bytes.NewBufferString(`foo:
+  bar:
+    - baz: 1
+    - baz: 2`)))
+
+	SetConfigFile(path.Join(os.TempDir(), fmt.Sprintf("config-%d.json", time.Now().UnixNano())))
+	require.NoError(t, WriteConfig())
+}
+
+func TestHasChanged(t *testing.T) {
+	Reset()
+	require.False(t, HasChanged("foo"))
+	require.False(t, HasChangedSinceInit("foo"))
+
+	SetConfigType("yml")
+	require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: bar
+
+bar:
+  bar:
+    - bar: 1
+    - bar: 1`)))
+
+	require.False(t, HasChangedSinceInit("foo"))
+	require.False(t, HasChangedSinceInit("bar"))
+	require.True(t, HasChanged("foo"))
+	require.True(t, HasChanged("bar"))
+
+	require.Equal(t, "bar", Get("foo"))
+	require.False(t, HasChanged("foo"))
+	require.False(t, HasChangedSinceInit("foo"))
+
+	require.NotNil(t, Get("bar"))
+
+	SetConfigType("yml")
+	require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: baz
+
+bar:
+  bar:
+    - bar: 2
+    - bar: 2`)))
+
+	require.True(t, HasChangedSinceInit("foo"))
+	require.True(t, HasChangedSinceInit("bar"))
+	require.True(t, HasChanged("foo"))
+	require.True(t, HasChanged("bar"))
+
+	require.Equal(t, "baz", Get("foo"))
+	require.False(t, HasChanged("foo"))
+	require.False(t, HasChangedSinceInit("foo"))
+	require.False(t, HasChangedSinceInit("foo"))
+}
+
+func TestConfigChangedAt(t *testing.T) {
+	t.Run("read config", func(t *testing.T) {
+		Reset()
+		SetConfigType("yml")
+		changedAt := ConfigChangeAt()
+
+		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: bar`)))
+
+		// Check that changedAt is different to inital
+		firstRead := ConfigChangeAt()
+		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
+
+		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: baz`)))
+
+		// Check that changedAt is different to last read
+		assert.NotEqual(t, firstRead.UnixNano(), ConfigChangeAt().UnixNano())
+	})
+
+	t.Run("merge config", func(t *testing.T) {
+		Reset()
+		SetConfigType("yml")
+		changedAt := ConfigChangeAt()
+
+		if err := v.ReadConfig(bytes.NewBuffer(yamlMergeExampleTgt)); err != nil {
+			t.Fatal(err)
+		}
+
+		// Check that changedAt is different to inital
+		firstRead := ConfigChangeAt()
+		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
+
+		if err := v.MergeConfig(bytes.NewBuffer(yamlMergeExampleSrc)); err != nil {
+			t.Fatal(err)
+		}
+
+		// Check that changedAt is different to last read
+		assert.NotEqual(t, firstRead.UnixNano(), ConfigChangeAt().UnixNano())
+	})
+
+	t.Run("watch file", func(t *testing.T) {
+		if runtime.GOOS == "linux" {
+			// TODO(bep) FIX ME
+			t.Skip("Skip test on Linux ...")
+		}
+
+		// given a `config.yaml` file being watched
+		v, configFile, cleanup := newViperWithConfigFile(t)
+		changedAt := v.ConfigChangeAt()
+		defer cleanup()
+
+		_, err := os.Stat(configFile)
+		require.NoError(t, err)
+		t.Logf("test config file: %s\n", configFile)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		v.OnConfigChange(func(in fsnotify.Event) {
+			t.Logf("config file changed")
+			wg.Done()
+		})
+		v.WatchConfig()
+
+		// when overwriting the file and waiting for the custom change notification handler to be triggered
+		err = ioutil.WriteFile(configFile, []byte("foo: baz\n"), 0640)
+		wg.Wait()
+		// then the config value should have changed
+		require.Nil(t, err)
+
+		// Check that changedAt is different
+		assert.NotEqual(t, changedAt.UnixNano(), v.ConfigChangeAt().UnixNano())
+	})
+}
+
+func TestRace(t *testing.T) {
+	Reset()
+
+	var wg sync.WaitGroup
+	keys := []string{"foo", "bar", "bar.bar", "bar.bar.bar"}
+	wg.Add(1 + len(keys))
+
+	start := time.Now()
+	go func() {
+		defer wg.Done()
+		var i int
+		for start.Add(time.Second).After(time.Now()) {
+			SetConfigType("yml")
+			require.NoError(t, ReadConfig(bytes.NewBufferString(fmt.Sprintf(`foo: bar
+bar:
+  bar:
+    - bar: %d`, i))))
+		}
+	}()
+
+	for _, key := range keys {
+		go func(k string) {
+			defer wg.Done()
+			for start.Add(time.Second).After(time.Now()) {
+				Get(k)
+			}
+		}(key)
+	}
+
+	wg.Wait()
+}
+
+func TestSetRawConfig(t *testing.T) {
+	Reset()
+	SetRawConfig(map[string]interface{}{"foo": "bar"})
+	assert.Equal(t, "bar", Get("foo"))
 }
 
 func BenchmarkGetBool(b *testing.B) {
