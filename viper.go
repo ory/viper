@@ -34,6 +34,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dgraph-io/ristretto"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/hashicorp/hcl"
 	"github.com/hashicorp/hcl/hcl/printer"
@@ -218,6 +220,9 @@ type Viper struct {
 
 	onConfigChange func(fsnotify.Event)
 
+	cache        *ristretto.Cache
+	cacheMaxCost int64
+
 	lock *sync.RWMutex
 }
 
@@ -240,6 +245,22 @@ func New() *Viper {
 	v.typeByDefValue = false
 	// v.lock = &lockLogger{new(sync.RWMutex)}
 	v.lock = new(sync.RWMutex)
+
+	var err error
+	v.cacheMaxCost = 1 << 20 // 1MB max cache
+	v.cache, err = ristretto.NewCache(&ristretto.Config{
+		NumCounters: 1000,
+		MaxCost:     1 << 20,
+		BufferItems: 64,
+	})
+	if err != nil {
+		// This will only happen if ristretto decides to throw an error based on the given configuration
+		// in future versions which is unlikely and therefore a panic'able error.
+		//
+		// Currently, ristretto will only error if one of the provided settings (NumCounters, MaxCost, BufferItems)
+		// is <= 0.
+		panic(fmt.Sprintf("cache options are invalid because: %s", err))
+	}
 
 	return v
 }
@@ -279,6 +300,15 @@ func EnvKeyReplacer(r StringReplacer) Option {
 	})
 }
 
+// Cache sets Viper's cache (*ristretto.Cache). You must also pass the ristretto.Config
+// object for some internal processing.
+func Cache(c *ristretto.Cache, cf *ristretto.Config) Option {
+	return optionFunc(func(v *Viper) {
+		v.cache = c
+		v.cacheMaxCost = cf.MaxCost
+	})
+}
+
 // NewWithOptions creates a new Viper instance.
 func NewWithOptions(opts ...Option) *Viper {
 	v := New()
@@ -296,7 +326,7 @@ func NewWithOptions(opts ...Option) *Viper {
 func Reset() {
 	v = New()
 	SupportedExts = []string{"json", "toml", "yaml", "yml", "properties", "props", "prop", "hcl", "dotenv", "env", "ini"}
-	SupportedRemoteProviders = []string{"etcd", "consul"}
+	SupportedRemoteProviders = []string{"etcd", "consul", "firestore"}
 }
 
 type defaultRemoteProvider struct {
@@ -337,7 +367,7 @@ type RemoteProvider interface {
 var SupportedExts = []string{"json", "toml", "yaml", "yml", "properties", "props", "prop", "hcl", "dotenv", "env", "ini"}
 
 // SupportedRemoteProviders are universally supported remote providers.
-var SupportedRemoteProviders = []string{"etcd", "consul"}
+var SupportedRemoteProviders = []string{"etcd", "consul", "firestore"}
 
 func OnConfigChange(run func(in fsnotify.Event)) { v.OnConfigChange(run) }
 func (v *Viper) OnConfigChange(run func(in fsnotify.Event)) {
@@ -433,6 +463,7 @@ func SetEnvPrefix(in string) { v.SetEnvPrefix(in) }
 func (v *Viper) SetEnvPrefix(in string) {
 	if in != "" {
 		v.lock.Lock()
+		v.cache.Clear()
 		v.envPrefix = in
 		v.lock.Unlock()
 	}
@@ -452,6 +483,7 @@ func (v *Viper) mergeWithEnvPrefix(in string) string {
 func AllowEmptyEnv(allowEmptyEnv bool) { v.AllowEmptyEnv(allowEmptyEnv) }
 func (v *Viper) AllowEmptyEnv(allowEmptyEnv bool) {
 	v.lock.Lock()
+	v.cache.Clear()
 	v.allowEmptyEnv = allowEmptyEnv
 	v.lock.Unlock()
 }
@@ -500,6 +532,7 @@ func (v *Viper) AddConfigPath(in string) {
 		jww.INFO.Println("adding", absin, "to paths to search")
 		v.lock.Lock()
 		if !stringInSlice(absin, v.configPaths) {
+			v.cache.Clear()
 			v.configPaths = append(v.configPaths, absin)
 		}
 		v.lock.Unlock()
@@ -508,7 +541,7 @@ func (v *Viper) AddConfigPath(in string) {
 
 // AddRemoteProvider adds a remote configuration source.
 // Remote Providers are searched in the order they are added.
-// provider is a string value, "etcd" or "consul" are currently supported.
+// provider is a string value: "etcd", "consul" or "firestore" are currently supported.
 // endpoint is the url.  etcd requires http://ip:port  consul requires ip:port
 // path is the path in the k/v store to retrieve configuration
 // To retrieve a config file called myapp.json from /configs/myapp.json
@@ -530,6 +563,7 @@ func (v *Viper) AddRemoteProvider(provider, endpoint, path string) error {
 		}
 		if !v.providerPathExists(rp) {
 			v.lock.Lock()
+			v.cache.Clear()
 			v.remoteProviders = append(v.remoteProviders, rp)
 			v.lock.Unlock()
 		}
@@ -539,14 +573,14 @@ func (v *Viper) AddRemoteProvider(provider, endpoint, path string) error {
 
 // AddSecureRemoteProvider adds a remote configuration source.
 // Secure Remote Providers are searched in the order they are added.
-// provider is a string value, "etcd" or "consul" are currently supported.
+// provider is a string value: "etcd", "consul" or "firestore" are currently supported.
 // endpoint is the url.  etcd requires http://ip:port  consul requires ip:port
 // secretkeyring is the filepath to your openpgp secret keyring.  e.g. /etc/secrets/myring.gpg
 // path is the path in the k/v store to retrieve configuration
 // To retrieve a config file called myapp.json from /configs/myapp.json
 // you should set path to /configs and set config name (SetConfigName()) to
 // "myapp"
-// Secure Remote Providers are implemented with github.com/xordataexchange/crypt
+// Secure Remote Providers are implemented with github.com/bketelsen/crypt
 func AddSecureRemoteProvider(provider, endpoint, path, secretkeyring string) error {
 	return v.AddSecureRemoteProvider(provider, endpoint, path, secretkeyring)
 }
@@ -565,6 +599,7 @@ func (v *Viper) AddSecureRemoteProvider(provider, endpoint, path, secretkeyring 
 		}
 		if !v.providerPathExists(rp) {
 			v.lock.Lock()
+			v.cache.Clear()
 			v.remoteProviders = append(v.remoteProviders, rp)
 			v.lock.Unlock()
 		}
@@ -745,6 +780,7 @@ func (v *Viper) isPathShadowedInAutoEnv(path []string) string {
 func SetTypeByDefaultValue(enable bool) { v.SetTypeByDefaultValue(enable) }
 func (v *Viper) SetTypeByDefaultValue(enable bool) {
 	v.lock.Lock()
+	v.cache.Clear()
 	v.typeByDefValue = enable
 	v.lock.Unlock()
 }
@@ -802,11 +838,13 @@ func (v *Viper) HasChangedSinceInit(key string) bool {
 func Get(key string) interface{} { return v.Get(key) }
 func (v *Viper) Get(key string) interface{} {
 	lcaseKey := strings.ToLower(key)
-	val := v.find(lcaseKey, true)
+
+	val := v.cachedFind(lcaseKey, true)
 
 	v.lock.Lock()
 	v.previousValues[lcaseKey] = val
 	v.lock.Unlock()
+
 	if val == nil {
 		return nil
 	}
@@ -825,7 +863,7 @@ func (v *Viper) Get(key string) interface{} {
 
 		switch valType.(type) {
 		case bool:
-			return cast.ToBool(val)
+			val = cast.ToBool(val)
 		case string:
 			return cast.ToString(val)
 		case int32, int16, int8, int:
@@ -1086,6 +1124,7 @@ func (v *Viper) BindFlagValue(key string, flag FlagValue) error {
 		return fmt.Errorf("flag for %q is nil", key)
 	}
 	v.lock.Lock()
+	v.cache.Clear()
 	v.pflags[strings.ToLower(key)] = flag
 	v.lock.Unlock()
 	return nil
@@ -1111,10 +1150,32 @@ func (v *Viper) BindEnv(input ...string) error {
 	}
 
 	v.lock.Lock()
+	v.cache.Clear()
 	v.env[key] = envkey
 	v.lock.Unlock()
 
 	return nil
+}
+
+// cachedFind uses Viper's cache to find a key's value and `v.find` if it is not available
+// in the cache.
+func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
+	realKey := v.realKey(lcaseKey)
+
+	v.lock.RLock()
+	value, found := v.cache.Get(realKey)
+	v.lock.RUnlock()
+	if found {
+		return value
+	}
+
+	value = v.find(lcaseKey, flagDefault)
+
+	v.lock.Lock()
+	v.cache.Set(realKey, value, 0)
+	v.lock.Unlock()
+
+	return value
 }
 
 // Given a key, find the value.
@@ -1276,7 +1337,7 @@ func readAsCSV(val string) ([]string, error) {
 func IsSet(key string) bool { return v.IsSet(key) }
 func (v *Viper) IsSet(key string) bool {
 	lcaseKey := strings.ToLower(key)
-	val := v.find(lcaseKey, false)
+	val := v.cachedFind(lcaseKey, false)
 	return val != nil
 }
 
@@ -1285,6 +1346,7 @@ func (v *Viper) IsSet(key string) bool {
 func AutomaticEnv() { v.AutomaticEnv() }
 func (v *Viper) AutomaticEnv() {
 	v.lock.Lock()
+	v.cache.Clear()
 	v.automaticEnvApplied = true
 	v.lock.Unlock()
 }
@@ -1295,6 +1357,7 @@ func (v *Viper) AutomaticEnv() {
 func SetEnvKeyReplacer(r *strings.Replacer) { v.SetEnvKeyReplacer(r) }
 func (v *Viper) SetEnvKeyReplacer(r *strings.Replacer) {
 	v.lock.Lock()
+	v.cache.Clear()
 	v.envKeyReplacer = r
 	v.lock.Unlock()
 }
@@ -1370,6 +1433,8 @@ func (v *Viper) InConfig(key string) bool {
 // Default only used when no value is provided by the user via flag, config or ENV.
 func SetDefault(key string, value interface{}) { v.SetDefault(key, value) }
 func (v *Viper) SetDefault(key string, value interface{}) {
+	// We're clearing the whole cache because nested keys may cause issues if only the key is evicted.
+
 	// If alias passed in, then set the proper default
 	key = v.realKey(strings.ToLower(key))
 	value = toCaseInsensitiveValue(value)
@@ -1381,6 +1446,7 @@ func (v *Viper) SetDefault(key string, value interface{}) {
 	v.lock.RUnlock()
 
 	v.lock.Lock()
+	v.cache.Clear()
 	// set innermost value
 	deepestMap[lastKey] = value
 	v.lock.Unlock()
@@ -1392,6 +1458,8 @@ func (v *Viper) SetDefault(key string, value interface{}) {
 // flags, config file, ENV, default, or key/value store.
 func Set(key string, value interface{}) { v.Set(key, value) }
 func (v *Viper) Set(key string, value interface{}) {
+	// We're clearing the whole cache because nested keys may cause issues if only the key is evicted.
+
 	// If alias passed in, then set the proper override
 	key = v.realKey(strings.ToLower(key))
 	value = toCaseInsensitiveValue(value)
@@ -1404,6 +1472,7 @@ func (v *Viper) Set(key string, value interface{}) {
 
 	// set innermost value
 	v.lock.Lock()
+	v.cache.Clear()
 	deepestMap[lastKey] = value
 	v.lock.Unlock()
 }
@@ -1436,6 +1505,7 @@ func (v *Viper) ReadInConfig() error {
 	}
 
 	v.lock.Lock()
+	v.cache.Clear()
 	v.config = config
 	v.configChangedAt = time.Now()
 	v.lock.Unlock()
@@ -1480,6 +1550,7 @@ func ReadConfig(in io.Reader) error { return v.ReadConfig(in) }
 func (v *Viper) ReadConfig(in io.Reader) error {
 	v.lock.Lock()
 	defer v.lock.Unlock()
+	v.cache.Clear()
 	v.config = make(map[string]interface{})
 	v.configChangedAt = time.Now()
 	return v.unmarshalReader(in, v.config)
@@ -1500,6 +1571,7 @@ func (v *Viper) MergeConfig(in io.Reader) error {
 func MergeConfigMap(cfg map[string]interface{}) error { return v.MergeConfigMap(cfg) }
 func (v *Viper) MergeConfigMap(cfg map[string]interface{}) error {
 	v.lock.Lock()
+	v.cache.Clear()
 	if v.config == nil {
 		v.config = make(map[string]interface{})
 	}
@@ -1547,11 +1619,18 @@ func (v *Viper) SafeWriteConfigAs(filename string) error {
 
 func (v *Viper) writeConfig(filename string, force bool) error {
 	jww.INFO.Println("Attempting to write configuration to file.")
+	var configType string
+
 	ext := filepath.Ext(filename)
-	if len(ext) <= 1 {
-		return fmt.Errorf("filename: %s requires valid extension", filename)
+	if ext != "" {
+		configType = ext[1:]
+	} else {
+		configType = v.configType
 	}
-	configType := ext[1:]
+	if configType == "" {
+		return fmt.Errorf("config type could not be determined for %s", filename)
+	}
+
 	if !stringInSlice(configType, SupportedExts) {
 		return UnsupportedConfigError(configType)
 	}
@@ -1889,7 +1968,6 @@ func (v *Viper) getKeyValueConfig() error {
 }
 
 func (v *Viper) getRemoteConfig(provider RemoteProvider) (map[string]interface{}, error) {
-
 	reader, err := RemoteConfig.Get(provider)
 	if err != nil {
 		return nil, err

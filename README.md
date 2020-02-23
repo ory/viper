@@ -405,7 +405,7 @@ in a Key/Value store such as etcd or Consul.  These values take precedence over
 default values, but are overridden by configuration values retrieved from disk,
 flags, or environment variables.
 
-Viper uses [crypt](https://github.com/xordataexchange/crypt) to retrieve
+Viper uses [crypt](https://github.com/bketelsen/crypt) to retrieve
 configuration from the K/V store, which means that you can store your
 configuration values encrypted and have them automatically decrypted if you have
 the correct gpg keyring.  Encryption is optional.
@@ -417,7 +417,7 @@ independently of it.
 K/V store. `crypt` defaults to etcd on http://127.0.0.1:4001.
 
 ```bash
-$ go get github.com/xordataexchange/crypt/bin/crypt
+$ go get github.com/bketelsen/crypt/bin/crypt
 $ crypt set -plaintext /config/hugo.json /Users/hugo/settings/config.json
 ```
 
@@ -458,6 +458,16 @@ err := viper.ReadRemoteConfig()
 fmt.Println(viper.Get("port")) // 8080
 fmt.Println(viper.Get("hostname")) // myhostname.com
 ```
+
+#### Firestore
+
+```go
+viper.AddRemoteProvider("firestore", "google-cloud-project-id", "collection/document")
+viper.SetConfigType("json") // Config's format: "json", "toml", "yaml", "yml"
+err := viper.ReadRemoteConfig()
+```
+
+Of course, you're allowed to use `SecureRemoteProvider` also
 
 ### Remote Key/Value Store Example - Encrypted
 
