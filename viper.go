@@ -206,6 +206,7 @@ type Viper struct {
 	config         map[string]interface{}
 	override       map[string]interface{}
 	defaults       map[string]interface{}
+	types          map[string]interface{}
 	kvstore        map[string]interface{}
 	pflags         map[string]FlagValue
 	env            map[string]string
@@ -237,6 +238,7 @@ func New() *Viper {
 	v.config = make(map[string]interface{})
 	v.override = make(map[string]interface{})
 	v.defaults = make(map[string]interface{})
+	v.types = make(map[string]interface{})
 	v.kvstore = make(map[string]interface{})
 	v.previousValues = make(map[string]interface{})
 	v.pflags = make(map[string]FlagValue)
@@ -849,44 +851,45 @@ func (v *Viper) Get(key string) interface{} {
 		return nil
 	}
 
-	if v.typeByDefValue {
-		// TODO(bep) this branch isn't covered by a single test.
-		valType := val
+	valType := val
 
-		v.lock.RLock()
-		path := strings.Split(lcaseKey, v.keyDelim)
-		defVal := v.searchMap(v.defaults, path)
-		if defVal != nil {
-			valType = defVal
-		}
-		v.lock.RUnlock()
+	v.lock.RLock()
+	path := strings.Split(lcaseKey, v.keyDelim)
+	valT := v.searchMap(v.types, path)
+	if valT == nil && v.typeByDefValue {
+		valT = v.searchMap(v.defaults, path)
+	}
+	v.lock.RUnlock()
+	valType = valT
 
-		switch valType.(type) {
-		case bool:
-			val = cast.ToBool(val)
-		case string:
-			return cast.ToString(val)
-		case int32, int16, int8, int:
-			return cast.ToInt(val)
-		case uint:
-			return cast.ToUint(val)
-		case uint32:
-			return cast.ToUint32(val)
-		case uint64:
-			return cast.ToUint64(val)
-		case int64:
-			return cast.ToInt64(val)
-		case float64, float32:
-			return cast.ToFloat64(val)
-		case time.Time:
-			return cast.ToTime(val)
-		case time.Duration:
-			return cast.ToDuration(val)
-		case []string:
-			return cast.ToStringSlice(val)
-		case []int:
-			return cast.ToIntSlice(val)
-		}
+	switch valType.(type) {
+	case bool:
+		val = cast.ToBool(val)
+	case string:
+		return cast.ToString(val)
+	case int32, int16, int8, int:
+		return cast.ToInt(val)
+	case uint:
+		return cast.ToUint(val)
+	case uint32:
+		return cast.ToUint32(val)
+	case uint64:
+		return cast.ToUint64(val)
+	case int64:
+		return cast.ToInt64(val)
+	case float64, float32:
+		return cast.ToFloat64(val)
+	case time.Time:
+		return cast.ToTime(val)
+	case time.Duration:
+		return cast.ToDuration(val)
+	case []string:
+		return cast.ToStringSlice(val)
+	case []int:
+		return cast.ToIntSlice(val)
+	case nil:
+		// this means neither the type nor the default is taken as a type
+		// to allow also nil as a type v.searchMap would have to return a found flag
 	}
 
 	return val
@@ -1172,7 +1175,9 @@ func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
 	value = v.find(lcaseKey, flagDefault)
 
 	v.lock.Lock()
-	v.cache.Set(realKey, value, 0)
+	if !v.cache.Set(realKey, value, 0) {
+		panic("could not set in cache")
+	}
 	v.lock.Unlock()
 
 	return value
@@ -1188,6 +1193,7 @@ func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
 //
 // Note: this assumes a lower-cased key given.
 func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
+	fmt.Printf("find entered\n")
 	v.lock.RLock()
 	var (
 		val    interface{}
@@ -1211,6 +1217,7 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 	path = strings.Split(lcaseKey, v.keyDelim)
 	nested = len(path) > 1
 
+	fmt.Printf("checking overrides\n")
 	// Set() override first
 	val = v.searchMap(v.override, path)
 	if val != nil {
@@ -1220,9 +1227,12 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 		return nil
 	}
 
+	fmt.Printf("checking pflag\n")
 	// PFlag override next
 	flag, exists := v.pflags[lcaseKey]
-	if exists && flag.HasChanged() {
+	changed := flag.HasChanged()
+	if exists && changed {
+		fmt.Printf("checking flag T: %s V: %s\n", flag.ValueType(), flag.ValueString())
 		switch flag.ValueType() {
 		case "int", "int8", "int16", "int32", "int64":
 			return cast.ToInt(flag.ValueString())
@@ -1239,6 +1249,7 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 			res, _ := readAsCSV(s)
 			return cast.ToIntSlice(res)
 		default:
+			fmt.Printf("returning value string\n")
 			return flag.ValueString()
 		}
 	}
@@ -1246,6 +1257,7 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 		return nil
 	}
 
+	fmt.Printf("could not find flag e: %v c: %v\n", exists, changed)
 	// Env override next
 	if v.automaticEnvApplied {
 		// even if it hasn't been registered, if automaticEnv is used,
@@ -1428,21 +1440,14 @@ func (v *Viper) InConfig(key string) bool {
 	return exists
 }
 
-// SetDefault sets the default value for this key.
-// SetDefault is case-insensitive for a key.
-// Default only used when no value is provided by the user via flag, config or ENV.
-func SetDefault(key string, value interface{}) { v.SetDefault(key, value) }
-func (v *Viper) SetDefault(key string, value interface{}) {
-	// We're clearing the whole cache because nested keys may cause issues if only the key is evicted.
-
-	// If alias passed in, then set the proper default
+func (v *Viper) setInMap(key string, value interface{}, target map[string]interface{}) {
 	key = v.realKey(strings.ToLower(key))
 	value = toCaseInsensitiveValue(value)
 
 	v.lock.RLock()
 	path := strings.Split(key, v.keyDelim)
 	lastKey := strings.ToLower(path[len(path)-1])
-	deepestMap := deepSearch(v.defaults, path[0:len(path)-1])
+	deepestMap := deepSearch(target, path[0:len(path)-1])
 	v.lock.RUnlock()
 
 	v.lock.Lock()
@@ -1452,29 +1457,30 @@ func (v *Viper) SetDefault(key string, value interface{}) {
 	v.lock.Unlock()
 }
 
+// SetDefault sets the default value for this key.
+// SetDefault is case-insensitive for a key.
+// Default only used when no value is provided by the user via flag, config or ENV.
+func SetDefault(key string, value interface{}) { v.SetDefault(key, value) }
+func (v *Viper) SetDefault(key string, value interface{}) {
+	v.setInMap(key, value, v.defaults)
+}
+
+// SetType sets the type for this key.
+// This type is used for type conversions, e.g. a slice from an env var
+// This function allows the default to be nil while still enabling those type conversions configured
+// through SetTypeByDefaultValue
+func SetType(key string, t interface{}) { v.SetType(key, t) }
+func (v *Viper) SetType(key string, t interface{}) {
+	v.setInMap(key, t, v.types)
+}
+
 // Set sets the value for the key in the override register.
 // Set is case-insensitive for a key.
 // Will be used instead of values obtained via
 // flags, config file, ENV, default, or key/value store.
 func Set(key string, value interface{}) { v.Set(key, value) }
 func (v *Viper) Set(key string, value interface{}) {
-	// We're clearing the whole cache because nested keys may cause issues if only the key is evicted.
-
-	// If alias passed in, then set the proper override
-	key = v.realKey(strings.ToLower(key))
-	value = toCaseInsensitiveValue(value)
-
-	v.lock.RLock()
-	path := strings.Split(key, v.keyDelim)
-	lastKey := strings.ToLower(path[len(path)-1])
-	deepestMap := deepSearch(v.override, path[0:len(path)-1])
-	v.lock.RUnlock()
-
-	// set innermost value
-	v.lock.Lock()
-	v.cache.Clear()
-	deepestMap[lastKey] = value
-	v.lock.Unlock()
+	v.setInMap(key, value, v.override)
 }
 
 // ReadInConfig will discover and load the configuration file from disk
