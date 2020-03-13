@@ -1230,8 +1230,7 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 	fmt.Printf("checking pflag\n")
 	// PFlag override next
 	flag, exists := v.pflags[lcaseKey]
-	changed := flag.HasChanged()
-	if exists && changed {
+	if exists && flag.HasChanged() {
 		fmt.Printf("checking flag T: %s V: %s\n", flag.ValueType(), flag.ValueString())
 		switch flag.ValueType() {
 		case "int", "int8", "int16", "int32", "int64":
@@ -1257,7 +1256,6 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 		return nil
 	}
 
-	fmt.Printf("could not find flag e: %v c: %v\n", exists, changed)
 	// Env override next
 	if v.automaticEnvApplied {
 		// even if it hasn't been registered, if automaticEnv is used,
