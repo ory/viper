@@ -968,6 +968,7 @@ func TestBindPFlag(t *testing.T) {
 
 	assert.Equal(t, testString, Get("testvalue"))
 
+	BindPFlag("testvalue", flag) // hack for pflag usage
 	flag.Value.Set("testing_mutate")
 	flag.Changed = true // hack for pflag usage
 
