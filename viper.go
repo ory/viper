@@ -855,11 +855,18 @@ func (v *Viper) Get(key string) interface{} {
 
 	v.lock.RLock()
 	path := strings.Split(lcaseKey, v.keyDelim)
-	valT := v.searchMap(v.types, path)
-	if valT == nil && v.typeByDefValue {
+	var valT interface{}
+	if typeVal := v.searchMap(v.types, path); typeVal != nil {
+		valT = typeVal
+	} else if v.typeByDefValue {
 		valT = v.searchMap(v.defaults, path)
+	} else {
+		// no typeVal set and typeDefByValue also not set - no conversion needed
+		v.lock.RUnlock()
+		return val
 	}
 	v.lock.RUnlock()
+
 	valType = valT
 
 	switch valType.(type) {
@@ -887,9 +894,6 @@ func (v *Viper) Get(key string) interface{} {
 		return cast.ToStringSlice(val)
 	case []int:
 		return cast.ToIntSlice(val)
-	case nil:
-		// this means neither the type nor the default is taken as a type
-		// to allow also nil as a type v.searchMap would have to return a found flag
 	}
 
 	return val
@@ -1175,9 +1179,7 @@ func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
 	value = v.find(lcaseKey, flagDefault)
 
 	v.lock.Lock()
-	if !v.cache.Set(realKey, value, 0) {
-		panic("could not set in cache")
-	}
+	v.cache.Set(realKey, value, 0)
 	v.lock.Unlock()
 
 	return value
@@ -1193,7 +1195,6 @@ func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
 //
 // Note: this assumes a lower-cased key given.
 func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
-	fmt.Printf("find entered\n")
 	v.lock.RLock()
 	var (
 		val    interface{}
@@ -1217,7 +1218,6 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 	path = strings.Split(lcaseKey, v.keyDelim)
 	nested = len(path) > 1
 
-	fmt.Printf("checking overrides\n")
 	// Set() override first
 	val = v.searchMap(v.override, path)
 	if val != nil {
@@ -1227,11 +1227,9 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 		return nil
 	}
 
-	fmt.Printf("checking pflag\n")
 	// PFlag override next
 	flag, exists := v.pflags[lcaseKey]
 	if exists && flag.HasChanged() {
-		fmt.Printf("checking flag T: %s V: %s\n", flag.ValueType(), flag.ValueString())
 		switch flag.ValueType() {
 		case "int", "int8", "int16", "int32", "int64":
 			return cast.ToInt(flag.ValueString())
@@ -1248,7 +1246,6 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 			res, _ := readAsCSV(s)
 			return cast.ToIntSlice(res)
 		default:
-			fmt.Printf("returning value string\n")
 			return flag.ValueString()
 		}
 	}
