@@ -969,14 +969,9 @@ func TestBindPFlag(t *testing.T) {
 
 	assert.Equal(t, testString, Get(testViperKey))
 
+	require.NoError(t, BindPFlag("testvalue", flag)) // hack for pflag usage
 	require.NoError(t, flag.Value.Set("testing_mutate"))
 	flag.Changed = true // hack for pflag usage
-	// viper needs some time to update the value so we are polling it
-	//for x := Get(testViperKey); x != "testing_mutate"; x = Get(testViperKey) {
-	//	//cval, found := v.cache.Get(testViperKey)
-	//	fmt.Printf("flag: %s\ngot: %s\nchanged: %v\n", v.pflags[testViperKey].ValueString(), x, v.pflags[testViperKey].HasChanged())
-	//	break
-	//}
 
 	assert.Equal(t, "testing_mutate", Get(testViperKey))
 }
