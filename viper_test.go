@@ -957,6 +957,7 @@ func TestBindPFlagsIntSlice(t *testing.T) {
 func TestBindPFlag(t *testing.T) {
 	var testString = "testing"
 	var testValue = newStringValue(testString, &testString)
+	testViperKey := "testvalue"
 
 	flag := &pflag.Flag{
 		Name:    "testflag",
@@ -964,15 +965,15 @@ func TestBindPFlag(t *testing.T) {
 		Changed: false,
 	}
 
-	BindPFlag("testvalue", flag)
+	require.NoError(t, BindPFlag(testViperKey, flag))
 
-	assert.Equal(t, testString, Get("testvalue"))
+	assert.Equal(t, testString, Get(testViperKey))
 
-	BindPFlag("testvalue", flag) // hack for pflag usage
-	flag.Value.Set("testing_mutate")
+	require.NoError(t, BindPFlag("testvalue", flag)) // hack for pflag usage
+	require.NoError(t, flag.Value.Set("testing_mutate"))
 	flag.Changed = true // hack for pflag usage
 
-	assert.Equal(t, "testing_mutate", Get("testvalue"))
+	assert.Equal(t, "testing_mutate", Get(testViperKey))
 }
 
 func TestBoundCaseSensitivity(t *testing.T) {
@@ -2335,6 +2336,47 @@ func TestConfigChangedAt(t *testing.T) {
 
 		// Check that changedAt is different
 		assert.NotEqual(t, changedAt.UnixNano(), v.ConfigChangeAt().UnixNano())
+	})
+}
+
+func TestTypeConversion(t *testing.T) {
+	t.Run("case=converts string to string slice length 1", func(t *testing.T) {
+		Reset()
+
+		key := "foo"
+		SetType(key, []string{})
+		Set(key, "bar")
+		assert.Equal(t, []string{"bar"}, Get(key))
+	})
+
+	t.Run("case=converts string to string slice length 3", func(t *testing.T) {
+		Reset()
+
+		key := "key"
+		SetType(key, []string{})
+		Set(key, "a b c")
+		assert.Equal(t, []string{"a", "b", "c"}, Get(key))
+	})
+
+	t.Run("case=SetType has precedence over default", func(t *testing.T) {
+		Reset()
+
+		key := "test_key"
+		SetTypeByDefaultValue(true)
+		SetDefault(key, 1)
+		SetType(key, []string{})
+		Set(key, "foo bar")
+		assert.Equal(t, []string{"foo", "bar"}, Get(key))
+	})
+
+	t.Run("case=type conversion from default value works aswell", func(t *testing.T) {
+		Reset()
+
+		key := "key"
+		SetDefault(key, []string{})
+		SetTypeByDefaultValue(true)
+		Set(key, "a b c")
+		assert.Equal(t, []string{"a", "b", "c"}, Get(key))
 	})
 }
 
