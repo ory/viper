@@ -830,6 +830,76 @@ func (v *Viper) HasChangedSinceInit(key string) bool {
 	return !reflect.DeepEqual(value, v.find(lcaseKey, true))
 }
 
+func castAllSourcesE(t, val interface{}) (interface{}, error) {
+	switch t.(type) {
+	case time.Time:
+		return cast.ToTimeE(val)
+	case time.Duration:
+		return cast.ToDurationE(val)
+	}
+
+	return val, nil
+}
+
+func castStringSourcesE(t interface{}, val string, pflagFormat bool) (interface{}, error) {
+	switch t.(type) {
+	case bool:
+		return cast.ToBoolE(val)
+	case string:
+		return val, nil
+	case int32, int16, int8, int:
+		return cast.ToIntE(val)
+	case uint:
+		return cast.ToUintE(val)
+	case uint32:
+		return cast.ToUint32E(val)
+	case uint64:
+		return cast.ToUint64E(val)
+	case int64:
+		return cast.ToInt64E(val)
+	case float64, float32:
+		return cast.ToFloat64E(val)
+	case []string:
+		if pflagFormat {
+			s := strings.TrimPrefix(val, "[")
+			s = strings.TrimSuffix(s, "]")
+			res, err := readAsCSV(s)
+			if err != nil {
+				return []string{}, err
+			}
+			return res, nil
+		}
+		return cast.ToStringSliceE(val)
+	case []int:
+		if pflagFormat {
+			s := strings.TrimPrefix(val, "[")
+			s = strings.TrimSuffix(s, "]")
+			res, err := readAsCSV(s)
+			if err != nil {
+				return []int{}, err
+			}
+			return cast.ToIntSliceE(res)
+		}
+		return cast.ToIntSliceE(val)
+	}
+
+	return castAllSourcesE(t, val)
+}
+
+func (v *Viper) getType(lcaseKey string) interface{} {
+	v.lock.RLock()
+	defer v.lock.RUnlock()
+
+	path := strings.Split(lcaseKey, v.keyDelim)
+
+	if typeVal := v.searchMap(v.types, path); typeVal != nil {
+		return typeVal
+	} else if v.typeByDefValue {
+		return v.searchMap(v.defaults, path)
+	}
+	return nil
+}
+
 // Get can retrieve any value given the key to use.
 // Get is case-insensitive for a key.
 // Get has the behavior of returning the value associated with the first
@@ -837,65 +907,24 @@ func (v *Viper) HasChangedSinceInit(key string) bool {
 // override, flag, env, config file, key/value store, default
 //
 // Get returns an interface. For a specific value use one of the Get____ methods.
-func Get(key string) interface{} { return v.Get(key) }
-func (v *Viper) Get(key string) interface{} {
+func GetE(key string) (interface{}, error) { return v.GetE(key) }
+func (v *Viper) GetE(key string) (interface{}, error) {
 	lcaseKey := strings.ToLower(key)
 
-	val := v.cachedFind(lcaseKey, true)
+	val, err := v.cachedFindE(lcaseKey, true)
+	if err != nil {
+		return val, err
+	}
 
 	v.lock.Lock()
 	v.previousValues[lcaseKey] = val
 	v.lock.Unlock()
 
-	if val == nil {
-		return nil
-	}
-
-	valType := val
-
-	v.lock.RLock()
-	path := strings.Split(lcaseKey, v.keyDelim)
-	var valT interface{}
-	if typeVal := v.searchMap(v.types, path); typeVal != nil {
-		valT = typeVal
-	} else if v.typeByDefValue {
-		valT = v.searchMap(v.defaults, path)
-	} else {
-		// no typeVal set and typeDefByValue also not set - no conversion needed
-		v.lock.RUnlock()
-		return val
-	}
-	v.lock.RUnlock()
-
-	valType = valT
-
-	switch valType.(type) {
-	case bool:
-		val = cast.ToBool(val)
-	case string:
-		return cast.ToString(val)
-	case int32, int16, int8, int:
-		return cast.ToInt(val)
-	case uint:
-		return cast.ToUint(val)
-	case uint32:
-		return cast.ToUint32(val)
-	case uint64:
-		return cast.ToUint64(val)
-	case int64:
-		return cast.ToInt64(val)
-	case float64, float32:
-		return cast.ToFloat64(val)
-	case time.Time:
-		return cast.ToTime(val)
-	case time.Duration:
-		return cast.ToDuration(val)
-	case []string:
-		return cast.ToStringSlice(val)
-	case []int:
-		return cast.ToIntSlice(val)
-	}
-
+	return val, nil
+}
+func Get(key string) interface{} { return v.Get(key) }
+func (v *Viper) Get(key string) interface{} {
+	val, _ := v.GetE(key)
 	return val
 }
 
@@ -1130,10 +1159,32 @@ func (v *Viper) BindFlagValue(key string, flag FlagValue) error {
 	if flag == nil {
 		return fmt.Errorf("flag for %q is nil", key)
 	}
+	lcaseKey := strings.ToLower(key)
 	v.lock.Lock()
 	v.cache.Clear()
-	v.pflags[strings.ToLower(key)] = flag
+	v.pflags[lcaseKey] = flag
 	v.lock.Unlock()
+
+	// this is to maintain backwards compatibility with pflag.ValueType()
+	// one should use viper.SetType(...) instead
+	v.lock.RLock()
+	typ := v.searchMap(v.types, strings.Split(lcaseKey, v.keyDelim))
+	v.lock.RUnlock()
+	// only use the old api if no type was set using SetType(...)
+	if typ == nil {
+		switch flag.ValueType() {
+		case "int", "int8", "int16", "int32", "int64":
+			v.SetType(key, 0)
+		case "bool":
+			v.SetType(key, false)
+		case "stringSlice":
+			v.SetType(key, []string{})
+		case "intSlice":
+			v.SetType(key, []int{})
+		default:
+			// unknown type, don't set any
+		}
+	}
 	return nil
 }
 
@@ -1166,23 +1217,31 @@ func (v *Viper) BindEnv(input ...string) error {
 
 // cachedFind uses Viper's cache to find a key's value and `v.find` if it is not available
 // in the cache.
-func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
+func (v *Viper) cachedFindE(lcaseKey string, flagDefault bool) (interface{}, error) {
 	realKey := v.realKey(lcaseKey)
 
 	v.lock.RLock()
 	value, found := v.cache.Get(realKey)
 	v.lock.RUnlock()
 	if found {
-		return value
+		return value, nil
 	}
 
-	value = v.find(lcaseKey, flagDefault)
+	value, castErr := v.findE(realKey, flagDefault)
+	if castErr != nil {
+		return value, castErr
+	}
 
 	v.lock.Lock()
 	v.cache.Set(realKey, value, 0)
 	v.lock.Unlock()
 
-	return value
+	return value, nil
+}
+
+func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
+	val, _ := v.cachedFindE(lcaseKey, flagDefault)
+	return val
 }
 
 // Given a key, find the value.
@@ -1194,7 +1253,7 @@ func (v *Viper) cachedFind(lcaseKey string, flagDefault bool) interface{} {
 // corresponds to a flag, the flag's default value is returned.
 //
 // Note: this assumes a lower-cased key given.
-func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
+func (v *Viper) findE(lcaseKey string, flagDefault bool) (interface{}, error) {
 	v.lock.RLock()
 	var (
 		val    interface{}
@@ -1206,12 +1265,13 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 	// compute the path through the nested maps to the nested value
 	if nested && v.isPathShadowedInDeepMap(path, castMapStringToMapInterface(v.aliases)) != "" {
 		v.lock.RUnlock()
-		return nil
+		return nil, nil
 	}
 	v.lock.RUnlock()
 
 	// if the requested key is an alias, then return the proper key
 	lcaseKey = v.realKey(lcaseKey)
+	typ := v.getType(lcaseKey)
 
 	v.lock.RLock()
 	defer v.lock.RUnlock()
@@ -1221,36 +1281,19 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 	// Set() override first
 	val = v.searchMap(v.override, path)
 	if val != nil {
-		return val
+		return castAllSourcesE(typ, val)
 	}
 	if nested && v.isPathShadowedInDeepMap(path, v.override) != "" {
-		return nil
+		return nil, nil
 	}
 
 	// PFlag override next
 	flag, exists := v.pflags[lcaseKey]
 	if exists && flag.HasChanged() {
-		switch flag.ValueType() {
-		case "int", "int8", "int16", "int32", "int64":
-			return cast.ToInt(flag.ValueString())
-		case "bool":
-			return cast.ToBool(flag.ValueString())
-		case "stringSlice":
-			s := strings.TrimPrefix(flag.ValueString(), "[")
-			s = strings.TrimSuffix(s, "]")
-			res, _ := readAsCSV(s)
-			return res
-		case "intSlice":
-			s := strings.TrimPrefix(flag.ValueString(), "[")
-			s = strings.TrimSuffix(s, "]")
-			res, _ := readAsCSV(s)
-			return cast.ToIntSlice(res)
-		default:
-			return flag.ValueString()
-		}
+		return castStringSourcesE(typ, flag.ValueString(), true)
 	}
 	if nested && v.isPathShadowedInFlatMap(path, v.pflags) != "" {
-		return nil
+		return nil, nil
 	}
 
 	// Env override next
@@ -1258,76 +1301,63 @@ func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
 		// even if it hasn't been registered, if automaticEnv is used,
 		// check any Get request
 		if val, ok := v.getEnv(v.mergeWithEnvPrefix(lcaseKey)); ok {
-			return val
+			return castStringSourcesE(typ, val, false)
 		}
 		if nested && v.isPathShadowedInAutoEnv(path) != "" {
-			return nil
+			return nil, nil
 		}
 	}
 	envkey, exists := v.env[lcaseKey]
 	if exists {
 		if val, ok := v.getEnv(envkey); ok {
-			return val
+			return castStringSourcesE(typ, val, false)
 		}
 	}
 	if nested && v.isPathShadowedInFlatMap(path, v.env) != "" {
-		return nil
+		return nil, nil
 	}
 
 	// Config file next
 	val = v.searchMapWithPathPrefixes(v.config, path)
 	if val != nil {
-		return val
+		return castAllSourcesE(typ, val)
 	}
 	if nested && v.isPathShadowedInDeepMap(path, v.config) != "" {
-		return nil
+		return nil, nil
 	}
 
 	// K/V store next
 	val = v.searchMap(v.kvstore, path)
 	if val != nil {
-		return val
+		return castAllSourcesE(typ, val)
 	}
 	if nested && v.isPathShadowedInDeepMap(path, v.kvstore) != "" {
-		return nil
+		return nil, nil
 	}
 
 	// Default next
 	val = v.searchMap(v.defaults, path)
 	if val != nil {
-		return val
+		return castAllSourcesE(typ, val)
 	}
 	if nested && v.isPathShadowedInDeepMap(path, v.defaults) != "" {
-		return nil
+		return nil, nil
 	}
 
 	if flagDefault {
 		// last chance: if no value is found and a flag does exist for the key,
 		// get the flag's default value even if the flag's value has not been set.
 		if flag, exists := v.pflags[lcaseKey]; exists {
-			switch flag.ValueType() {
-			case "int", "int8", "int16", "int32", "int64":
-				return cast.ToInt(flag.ValueString())
-			case "bool":
-				return cast.ToBool(flag.ValueString())
-			case "stringSlice":
-				s := strings.TrimPrefix(flag.ValueString(), "[")
-				s = strings.TrimSuffix(s, "]")
-				res, _ := readAsCSV(s)
-				return res
-			case "intSlice":
-				s := strings.TrimPrefix(flag.ValueString(), "[")
-				s = strings.TrimSuffix(s, "]")
-				res, _ := readAsCSV(s)
-				return cast.ToIntSlice(res)
-			default:
-				return flag.ValueString()
-			}
+			return castStringSourcesE(typ, flag.ValueString(), true)
 		}
 		// last item, no need to check shadowing
 	}
 
-	return nil
+	return nil, nil
+}
+func (v *Viper) find(lcaseKey string, flagDefault bool) interface{} {
+	val, _ := v.findE(lcaseKey, flagDefault)
+	return val
 }
 
 func readAsCSV(val string) ([]string, error) {
@@ -2103,12 +2133,16 @@ outer:
 }
 
 // AllSettings merges all settings and returns them as a map[string]interface{}.
-func AllSettings() map[string]interface{} { return v.AllSettings() }
-func (v *Viper) AllSettings() map[string]interface{} {
-	m := map[string]interface{}{}
+func AllSettingsE() (map[string]interface{}, error) { return v.AllSettingsE() }
+func (v *Viper) AllSettingsE() (m map[string]interface{}, lastErr error) {
+	m = map[string]interface{}{}
 	// start from the list of keys, and construct the map one value at a time
 	for _, k := range v.AllKeys() {
-		value := v.Get(k)
+		value, err := v.GetE(k)
+		if err != nil {
+			// set last err but still continue as we still want to compute the result with the zero value for this specific key
+			lastErr = err
+		}
 		if value == nil {
 			// should not happen, since AllKeys() returns only keys holding a value,
 			// check just in case anything changes
@@ -2120,7 +2154,14 @@ func (v *Viper) AllSettings() map[string]interface{} {
 		// set innermost value
 		deepestMap[lastKey] = value
 	}
-	return toMapStringInterface(m).(map[string]interface{}) // This is safe because the input is map[string]interface{}
+	m = toMapStringInterface(m).(map[string]interface{}) // This is safe because the input is map[string]interface{}
+	return
+}
+
+func AllSettings() map[string]interface{} { return v.AllSettings() }
+func (v *Viper) AllSettings() map[string]interface{} {
+	m, _ := v.AllSettingsE()
+	return m
 }
 
 // SetFs sets the filesystem to use to read configuration.
