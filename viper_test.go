@@ -2356,8 +2356,8 @@ func TestCastAllSourcesE(t *testing.T) {
 		},
 		{
 			t:         time.Time{},
-			val:       time.Now().Add(time.Hour).Truncate(time.Hour * 24).String(),
-			expected:  time.Now().Add(time.Hour).Truncate(time.Hour * 24),
+			val:       time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC().String(),
+			expected:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC(),
 			expectErr: false,
 		},
 		{
@@ -2453,9 +2453,9 @@ func TestCastStringSourcesE(t *testing.T) {
 		},
 		{
 			t:         time.Time{},
-			val:       time.Now().Add(time.Hour).Truncate(time.Hour * 24).String(),
-			pflagVal:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).String(),
-			expected:  time.Now().Add(time.Hour).Truncate(time.Hour * 24),
+			val:       time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC().String(),
+			pflagVal:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC().String(),
+			expected:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC(),
 			expectErr: false,
 		},
 		{
