@@ -883,28 +883,30 @@ func TestBindPFlagsStringSlice(t *testing.T) {
 		flagSet.StringSlice("stringslice", testValue.Expected, "test")
 
 		for _, changed := range []bool{true, false} {
-			flagSet.VisitAll(func(f *pflag.Flag) {
-				f.Value.Set(testValue.Value)
-				f.Changed = changed
+			t.Run(fmt.Sprintf("case=value:'%s';changed:%v", testValue.Value, changed), func(t *testing.T) {
+				flagSet.VisitAll(func(f *pflag.Flag) {
+					require.NoError(t, f.Value.Set(testValue.Value))
+					f.Changed = changed
+				})
+
+				err := v.BindPFlags(flagSet)
+				if err != nil {
+					t.Fatalf("error binding flag set, %v", err)
+				}
+
+				type TestStr struct {
+					StringSlice []string
+				}
+				val := &TestStr{}
+				if err := v.Unmarshal(val); err != nil {
+					t.Fatalf("%+#v cannot unmarshal: %s", testValue.Value, err)
+				}
+				if changed {
+					assert.Equal(t, testValue.Expected, val.StringSlice)
+				} else {
+					assert.Equal(t, defaultVal, val.StringSlice)
+				}
 			})
-
-			err := v.BindPFlags(flagSet)
-			if err != nil {
-				t.Fatalf("error binding flag set, %v", err)
-			}
-
-			type TestStr struct {
-				StringSlice []string
-			}
-			val := &TestStr{}
-			if err := v.Unmarshal(val); err != nil {
-				t.Fatalf("%+#v cannot unmarshal: %s", testValue.Value, err)
-			}
-			if changed {
-				assert.Equal(t, testValue.Expected, val.StringSlice)
-			} else {
-				assert.Equal(t, defaultVal, val.StringSlice)
-			}
 		}
 	}
 }
@@ -957,6 +959,7 @@ func TestBindPFlagsIntSlice(t *testing.T) {
 func TestBindPFlag(t *testing.T) {
 	var testString = "testing"
 	var testValue = newStringValue(testString, &testString)
+	testViperKey := "testvalue"
 
 	flag := &pflag.Flag{
 		Name:    "testflag",
@@ -964,15 +967,15 @@ func TestBindPFlag(t *testing.T) {
 		Changed: false,
 	}
 
-	BindPFlag("testvalue", flag)
+	require.NoError(t, BindPFlag(testViperKey, flag))
 
-	assert.Equal(t, testString, Get("testvalue"))
+	assert.Equal(t, testString, Get(testViperKey))
 
-	BindPFlag("testvalue", flag) // hack for pflag usage
-	flag.Value.Set("testing_mutate")
+	require.NoError(t, BindPFlag("testvalue", flag)) // hack for pflag usage
+	require.NoError(t, flag.Value.Set("testing_mutate"))
 	flag.Changed = true // hack for pflag usage
 
-	assert.Equal(t, "testing_mutate", Get("testvalue"))
+	assert.Equal(t, "testing_mutate", Get(testViperKey))
 }
 
 func TestBoundCaseSensitivity(t *testing.T) {
@@ -2335,6 +2338,185 @@ func TestConfigChangedAt(t *testing.T) {
 
 		// Check that changedAt is different
 		assert.NotEqual(t, changedAt.UnixNano(), v.ConfigChangeAt().UnixNano())
+	})
+}
+
+func TestCastAllSourcesE(t *testing.T) {
+	for i, tc := range []struct {
+		t         interface{}
+		val       interface{}
+		expected  interface{}
+		expectErr bool
+	}{
+		{
+			t:         time.Nanosecond,
+			val:       "1s",
+			expected:  time.Second,
+			expectErr: false,
+		},
+		{
+			t:         time.Time{},
+			val:       time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC().String(),
+			expected:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC(),
+			expectErr: false,
+		},
+		{
+			t:         "",
+			val:       "foo bar",
+			expected:  "foo bar",
+			expectErr: false,
+		},
+		{
+			t:         0,
+			val:       1234,
+			expected:  1234,
+			expectErr: false,
+		},
+		{
+			t:         time.Nanosecond,
+			val:       "not a duration",
+			expected:  time.Duration(0),
+			expectErr: true,
+		},
+		{
+			t:         time.Now(),
+			val:       "not a time",
+			expected:  time.Time{},
+			expectErr: true,
+		},
+	} {
+		t.Run(fmt.Sprintf("case=%d with value %+v", i, tc.val), func(t *testing.T) {
+			res, err := castAllSourcesE(tc.t, tc.val)
+			assert.Equal(t, tc.expectErr, err != nil)
+			assert.Equal(t, tc.expected, res)
+		})
+	}
+}
+
+func TestCastStringSourcesE(t *testing.T) {
+	ignore := "ignore"
+	for i, tc := range []struct {
+		t         interface{}
+		val       string
+		pflagVal  string
+		expected  interface{}
+		expectErr bool
+	}{
+		{
+			t:         []string{},
+			val:       "bar",
+			pflagVal:  "[bar]",
+			expected:  []string{"bar"},
+			expectErr: false,
+		},
+		{
+			t:         []string{},
+			val:       "a b c",
+			pflagVal:  "[a,b,c]",
+			expected:  []string{"a", "b", "c"},
+			expectErr: false,
+		},
+		{
+			t:         []int{},
+			val:       ignore, // this testcase is not possible as the cast library does not convert from string to []int
+			pflagVal:  "[1,2,3]",
+			expected:  []int{1, 2, 3},
+			expectErr: false,
+		},
+		{
+			t:         false,
+			val:       "true",
+			pflagVal:  "true",
+			expected:  true,
+			expectErr: false,
+		},
+		{
+			t:         0,
+			val:       "1234",
+			pflagVal:  "1234",
+			expected:  1234,
+			expectErr: false,
+		},
+		{
+			t:         0.0,
+			val:       "12.34",
+			pflagVal:  "12.34",
+			expected:  12.34,
+			expectErr: false,
+		},
+		{
+			t:         time.Nanosecond,
+			val:       "1s",
+			pflagVal:  "1s",
+			expected:  time.Second,
+			expectErr: false,
+		},
+		{
+			t:         time.Time{},
+			val:       time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC().String(),
+			pflagVal:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC().String(),
+			expected:  time.Now().Add(time.Hour).Truncate(time.Hour * 24).UTC(),
+			expectErr: false,
+		},
+		{
+			t:         0,
+			val:       "not a number",
+			pflagVal:  "not a number",
+			expected:  0,
+			expectErr: true,
+		},
+	} {
+		t.Run(fmt.Sprintf("case=%d value:%s pflagValue:%s", i, tc.val, tc.pflagVal), func(t *testing.T) {
+			if tc.val != ignore {
+				res, err := castStringSourcesE(tc.t, tc.val, false)
+				assert.Equal(t, tc.expectErr, err != nil, err)
+				assert.Equal(t, tc.expected, res)
+			}
+
+			if tc.pflagVal != ignore {
+				res, err := castStringSourcesE(tc.t, tc.pflagVal, true)
+				assert.Equal(t, tc.expectErr, err != nil, err)
+				assert.Equal(t, tc.expected, res)
+			}
+		})
+	}
+}
+
+func TestGetType(t *testing.T) {
+	t.Run("case=SetType has precedence over default", func(t *testing.T) {
+		v := New()
+
+		key := "test_key"
+		typ := ""
+		v.SetTypeByDefaultValue(true)
+		v.SetDefault(key, 0)
+		v.SetType(key, typ)
+		assert.Equal(t, typ, v.getType(key))
+	})
+
+	t.Run("case=returns default", func(t *testing.T) {
+		v := New()
+
+		key := "test_key"
+		typ := ""
+		v.SetDefault(key, typ)
+		v.SetTypeByDefaultValue(true)
+		assert.Equal(t, typ, v.getType(key))
+	})
+
+	t.Run("case=returns nil if SetTypeByDefault is false", func(t *testing.T) {
+		v := New()
+
+		key := "test_key"
+		v.SetTypeByDefaultValue(false)
+		v.SetDefault(key, 0)
+		assert.Equal(t, nil, v.getType(key))
+	})
+
+	t.Run("case=returns nil when nothing is set", func(t *testing.T) {
+		v := New()
+
+		assert.Equal(t, nil, v.getType("test_key"))
 	})
 }
 
