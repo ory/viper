@@ -1552,6 +1552,7 @@ func (v *Viper) SetRawConfig(config map[string]interface{}) {
 	insensitiviseMap(config)
 	v.config = config
 	v.configChangedAt = time.Now()
+	v.cache.Clear()
 }
 
 // MergeInConfig merges a new configuration with an existing config.
