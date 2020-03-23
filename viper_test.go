@@ -2553,9 +2553,24 @@ bar:
 }
 
 func TestSetRawConfig(t *testing.T) {
-	Reset()
-	SetRawConfig(map[string]interface{}{"foo": "bar"})
-	assert.Equal(t, "bar", Get("foo"))
+	t.Run("case=setting the config map works", func(t *testing.T) {
+		v := New()
+		v.SetRawConfig(map[string]interface{}{"foo": "bar"})
+		assert.Equal(t, "bar", v.Get("foo"))
+	})
+
+	t.Run("case=resets cache", func(t *testing.T) {
+		key := "foo"
+		v := New()
+		// make sure the value is in the cache
+		for !v.cache.Set(key, "bar", 0) {
+		}
+		for _, ok := v.cache.Get(key); !ok; _, ok = v.cache.Get(key) {
+		}
+
+		v.SetRawConfig(map[string]interface{}{key: "not bar"})
+		assert.Equal(t, "not bar", v.Get(key))
+	})
 }
 
 func BenchmarkGetBool(b *testing.B) {
