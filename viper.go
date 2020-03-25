@@ -841,7 +841,7 @@ func castAllSourcesE(t, val interface{}) (interface{}, error) {
 	return val, nil
 }
 
-func castStringSourcesE(t interface{}, val string, pflagFormat bool) (interface{}, error) {
+func castStringSourcesE(t interface{}, val string) (interface{}, error) {
 	switch t.(type) {
 	case bool:
 		return cast.ToBoolE(val)
@@ -860,27 +860,21 @@ func castStringSourcesE(t interface{}, val string, pflagFormat bool) (interface{
 	case float64, float32:
 		return cast.ToFloat64E(val)
 	case []string:
-		if pflagFormat {
-			s := strings.TrimPrefix(val, "[")
-			s = strings.TrimSuffix(s, "]")
-			res, err := readAsCSV(s)
-			if err != nil {
-				return []string{}, err
-			}
-			return res, nil
+		s := strings.TrimPrefix(val, "[")
+		s = strings.TrimSuffix(s, "]")
+		res, err := readAsCSV(s)
+		if err != nil {
+			return []string{}, err
 		}
-		return cast.ToStringSliceE(val)
+		return res, nil
 	case []int:
-		if pflagFormat {
-			s := strings.TrimPrefix(val, "[")
-			s = strings.TrimSuffix(s, "]")
-			res, err := readAsCSV(s)
-			if err != nil {
-				return []int{}, err
-			}
-			return cast.ToIntSliceE(res)
+		s := strings.TrimPrefix(val, "[")
+		s = strings.TrimSuffix(s, "]")
+		res, err := readAsCSV(s)
+		if err != nil {
+			return []int{}, err
 		}
-		return cast.ToIntSliceE(val)
+		return cast.ToIntSliceE(res)
 	}
 
 	return castAllSourcesE(t, val)
@@ -1290,7 +1284,7 @@ func (v *Viper) findE(lcaseKey string, flagDefault bool) (interface{}, error) {
 	// PFlag override next
 	flag, exists := v.pflags[lcaseKey]
 	if exists && flag.HasChanged() {
-		return castStringSourcesE(typ, flag.ValueString(), true)
+		return castStringSourcesE(typ, flag.ValueString())
 	}
 	if nested && v.isPathShadowedInFlatMap(path, v.pflags) != "" {
 		return nil, nil
@@ -1301,7 +1295,7 @@ func (v *Viper) findE(lcaseKey string, flagDefault bool) (interface{}, error) {
 		// even if it hasn't been registered, if automaticEnv is used,
 		// check any Get request
 		if val, ok := v.getEnv(v.mergeWithEnvPrefix(lcaseKey)); ok {
-			return castStringSourcesE(typ, val, false)
+			return castStringSourcesE(typ, val)
 		}
 		if nested && v.isPathShadowedInAutoEnv(path) != "" {
 			return nil, nil
@@ -1310,7 +1304,7 @@ func (v *Viper) findE(lcaseKey string, flagDefault bool) (interface{}, error) {
 	envkey, exists := v.env[lcaseKey]
 	if exists {
 		if val, ok := v.getEnv(envkey); ok {
-			return castStringSourcesE(typ, val, false)
+			return castStringSourcesE(typ, val)
 		}
 	}
 	if nested && v.isPathShadowedInFlatMap(path, v.env) != "" {
@@ -1348,7 +1342,7 @@ func (v *Viper) findE(lcaseKey string, flagDefault bool) (interface{}, error) {
 		// last chance: if no value is found and a flag does exist for the key,
 		// get the flag's default value even if the flag's value has not been set.
 		if flag, exists := v.pflags[lcaseKey]; exists {
-			return castStringSourcesE(typ, flag.ValueString(), true)
+			return castStringSourcesE(typ, flag.ValueString())
 		}
 		// last item, no need to check shadowing
 	}
