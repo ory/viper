@@ -2273,39 +2273,37 @@ func TestConfigChangedAt(t *testing.T) {
 	t.Run("read config", func(t *testing.T) {
 		Reset()
 		SetConfigType("yml")
-		changedAt := ConfigChangeAt()
+		changedAt := ConfigChanges()
 
 		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: bar`)))
 
 		// Check that changedAt is different to initial
-		firstRead := ConfigChangeAt()
-		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
+		assert.Equal(t, changedAt, ConfigChanges()-1)
 
 		require.NoError(t, ReadConfig(bytes.NewBufferString(`foo: baz`)))
 
-		// Check that changedAt is different to last read
-		assert.NotEqual(t, firstRead.UnixNano(), ConfigChangeAt().UnixNano())
+		assert.Equal(t, changedAt, ConfigChanges()-2)
 	})
 
 	t.Run("merge config", func(t *testing.T) {
 		Reset()
 		SetConfigType("yml")
-		changedAt := ConfigChangeAt()
+		changedAt := ConfigChanges()
 
 		if err := v.ReadConfig(bytes.NewBuffer(yamlMergeExampleTgt)); err != nil {
 			t.Fatal(err)
 		}
 
 		// Check that changedAt is different to initial
-		firstRead := ConfigChangeAt()
-		assert.NotEqual(t, changedAt.UnixNano(), firstRead.UnixNano())
+		firstRead := ConfigChanges()
+		assert.NotEqual(t, changedAt, firstRead)
 
 		if err := v.MergeConfig(bytes.NewBuffer(yamlMergeExampleSrc)); err != nil {
 			t.Fatal(err)
 		}
 
 		// Check that changedAt is different to last read
-		assert.NotEqual(t, firstRead.UnixNano(), ConfigChangeAt().UnixNano())
+		assert.NotEqual(t, firstRead, ConfigChanges())
 	})
 
 	t.Run("watch file", func(t *testing.T) {
@@ -2316,7 +2314,7 @@ func TestConfigChangedAt(t *testing.T) {
 
 		// given a `config.yaml` file being watched
 		v, configFile, cleanup := newViperWithConfigFile(t)
-		changedAt := v.ConfigChangeAt()
+		changedAt := v.ConfigVersion()
 		defer cleanup()
 
 		_, err := os.Stat(configFile)
@@ -2337,7 +2335,7 @@ func TestConfigChangedAt(t *testing.T) {
 		require.Nil(t, err)
 
 		// Check that changedAt is different
-		assert.NotEqual(t, changedAt.UnixNano(), v.ConfigChangeAt().UnixNano())
+		assert.NotEqual(t, changedAt, v.ConfigVersion())
 	})
 }
 
