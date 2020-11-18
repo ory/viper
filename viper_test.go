@@ -868,7 +868,7 @@ func TestBindPFlagsStringSlice(t *testing.T) {
 		Expected []string
 		Value    string
 	}{
-		{nil, ""},
+		{[]string{}, ""},
 		{[]string{"jeden"}, "jeden"},
 		{[]string{"dwa", "trzy"}, "dwa,trzy"},
 		{[]string{"cztery", "piec , szesc"}, "cztery,\"piec , szesc\""},
@@ -916,7 +916,7 @@ func TestBindPFlagsIntSlice(t *testing.T) {
 		Expected []int
 		Value    string
 	}{
-		{nil, ""},
+		{[]int{}, ""},
 		{[]int{1}, "1"},
 		{[]int{2, 3}, "2,3"},
 	}
